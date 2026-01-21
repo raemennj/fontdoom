@@ -1,0 +1,5 @@
+{
+  "name": "FontDoom",
+  "description": "The ultimate infinite-scroll font picker powered by Gemini AI. Doom-scroll through Google Fonts or ask AI to find the perfect typeface for your vibe.",
+  "requestFramePermissions": []
+}

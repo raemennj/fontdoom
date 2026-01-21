@@ -1,0 +1,1 @@
+{"name":"FontDoom","short_name":"FontDoom","description":"Infinite online font selector and doom scroller fidget toy","start_url":"/","display":"standalone","background_color":"#050505","theme_color":"#050505","lang":"en","scope":"/","icons":[{"src":"icon.svg","sizes":"192x192 512x512","type":"image/svg+xml","purpose":"any maskable"}]}
