@@ -1,205 +1,194 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { GOOGLE_FONTS_LIST, PRESET_TEXTS } from './constants';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PRESET_TEXTS } from './constants';
+import type { FontDef } from './types';
+import { fallbackFonts, getFontCatalog } from './services/fontCatalog';
+import { shuffledFontDeck } from './services/shuffle';
+import Controls from './components/Controls';
 import FontCard from './components/FontCard';
-import Controls, { VIBE_CATEGORIES } from './components/Controls';
-import { generateSampleText } from './services/geminiService';
-import { LoadingState, FontDef } from './types';
 
-function App() {
-  const [allFonts] = useState(GOOGLE_FONTS_LIST);
-  const [selectedCategory, setSelectedCategory] = useState('all');
+type Viewport = { top: number; width: number; height: number };
+function view(): Viewport {
+  return { top: window.scrollY, width: window.innerWidth, height: window.innerHeight };
+}
+function columns(width: number): number {
+  return width >= 1536 ? 5 : width >= 1280 ? 4 : width >= 1024 ? 3 : width >= 640 ? 2 : 1;
+}
+function getFavorites(): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem('fontdoom-favorites-v1') || '[]');
+    return Array.isArray(stored) ? stored.filter((s): s is string => typeof s === 'string') : [];
+  } catch { return []; }
+}
+const GAP = 12;
+const TOP = 64;
+const BUFFER_ROWS = 5;
+
+export default function App() {
+  const [catalog, setCatalog] = useState<FontDef[]>(fallbackFonts);
+  const [catalogStatus, setCatalogStatus] = useState('Loading font catalog');
+  const [category, setCategory] = useState('all');
   const [sampleText, setSampleText] = useState(PRESET_TEXTS[0]);
   const [fontSize, setFontSize] = useState(48);
-  const [loadingState, setLoadingState] = useState<LoadingState>(LoadingState.IDLE);
-  
-  const [isHeaderVisible, setIsHeaderVisible] = useState(true);
-  const lastScrollY = useRef(0);
+  const [favorites, setFavorites] = useState<string[]>(getFavorites);
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 0xffffffff));
+  const [cycles, setCycles] = useState(1);
+  const [viewport, setViewport] = useState<Viewport>(view);
+  const [headerVisible, setHeaderVisible] = useState(true);
+  const prevScroll = useRef(0);
+  const frame = useRef<number | null>(null);
 
-  const [renderMultiplier, setRenderMultiplier] = useState(1);
-  const loaderRef = useRef<HTMLDivElement>(null);
-
-  const filteredFonts = useMemo(() => {
-    if (selectedCategory === 'all') return allFonts;
-    
-    return allFonts.filter(f => {
-      const isCategoryMatch = f.category.toLowerCase() === selectedCategory.toLowerCase();
-      const isTagMatch = f.tags?.some(tag => tag.toLowerCase() === selectedCategory.toLowerCase());
-      return isCategoryMatch || isTagMatch;
+  useEffect(() => {
+    const controller = new AbortController();
+    getFontCatalog(controller.signal).then(fonts => {
+      if (!controller.signal.aborted) {
+        setCatalog(fonts);
+        setCatalogStatus('Fontsource + Google Fonts');
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted) setCatalogStatus('Offline fallback catalog');
     });
-  }, [allFonts, selectedCategory]);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      const currentScrollY = window.scrollY;
-      
-      if (currentScrollY <= 0) {
-        setIsHeaderVisible(true);
-      } else if (currentScrollY < lastScrollY.current) {
-        setIsHeaderVisible(true);
-      } else if (currentScrollY > lastScrollY.current && currentScrollY > 100) {
-        setIsHeaderVisible(false);
-      }
-      
-      lastScrollY.current = currentScrollY;
-    };
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setRenderMultiplier((prev) => prev + 1);
-        }
-      },
-      { rootMargin: '1200px' }
-    );
+    try { localStorage.setItem('fontdoom-favorites-v1', JSON.stringify(favorites)); }
+    catch { /* Private browsing still works. */ }
+  }, [favorites]);
 
-    if (loaderRef.current) {
-      observer.observe(loaderRef.current);
+  const pool = useMemo(() => {
+    if (category === 'favorites') {
+      const saved = new Set(favorites);
+      return catalog.filter(f => saved.has(f.family.toLowerCase()));
     }
+    if (category === 'all') return catalog;
+    return catalog.filter(f => f.category.toLowerCase() === category ||
+      f.tags?.some(tag => tag.toLowerCase() === category));
+  }, [catalog, favorites, category]);
 
-    return () => observer.disconnect();
-  }, []);
-
-  const handleCategoryChange = async (category: string) => {
-    setSelectedCategory(category);
-    setRenderMultiplier(1);
-    
-    try {
-      setLoadingState(LoadingState.LOADING);
-      const vibeMap: Record<string, string> = {
-        'all': 'general typography',
-        'sans-serif': 'modern tech',
-        'serif': 'classic literature',
-        'monospace': 'coding terminal hacker',
-        'handwriting': 'personal handwriting note',
-        'display': 'loud magazine headline',
-        'cyber': 'neo-tokyo cyberpunk neon',
-        'retro': '80s arcade vintage aesthetic',
-        'minimal': 'clean swiss minimalism',
-        'elegant': 'luxury fashion boutique',
-        'playful': 'childhood toy brand',
-        'brutal': 'concrete brutalist architecture',
-        'weird': 'abstract glitchy experimental',
-        'futuristic': 'interstellar space journey',
-        'tech': 'blueprints and engineering',
-        'gothic': 'dark medieval castle',
-        'gaming': 'esports tournament UI',
-        'modern': 'contemporary art gallery'
-      };
-      const customText = await generateSampleText(vibeMap[category] || category);
-      setSampleText(customText);
-      setLoadingState(LoadingState.SUCCESS);
-    } catch (e) {
-      setLoadingState(LoadingState.ERROR);
+  // No repeats within a complete deck. Use a deterministic seed per cycle,
+  // so a virtualized card reappears correctly when scrolling backwards.
+  const decks = useMemo(() => new Map<number, FontDef[]>(), [pool, seed]);
+  const cycleDeck = useCallback((cycle: number): FontDef[] => {
+    const existing = decks.get(cycle);
+    if (existing) return existing;
+    const order = shuffledFontDeck(pool, (seed ^ Math.imul(cycle + 1, 0x9e3779b9)) >>> 0);
+    if (cycle > 0 && order.length > 1) {
+      const previous = cycleDeck(cycle - 1);
+      if (order[0].family === previous[previous.length - 1].family) {
+        [order[0], order[1]] = [order[1], order[0]];
+      }
     }
-  };
+    decks.set(cycle, order);
+    if (decks.size > 8) {
+      const oldest = decks.keys().next().value;
+      if (oldest !== undefined) decks.delete(oldest);
+    }
+    return order;
+  }, [decks, pool, seed]);
 
-  const handleRandomVibe = () => {
-    const randomVibe = VIBE_CATEGORIES[Math.floor(Math.random() * VIBE_CATEGORIES.length)];
-    handleCategoryChange(randomVibe.id);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  const cols = columns(viewport.width);
+  const cardHeight = Math.max(142, Math.ceil(fontSize * 1.26) + 70);
+  const stride = cardHeight + GAP;
+  const count = pool.length;
+  const rowCount = count ? Math.ceil(cycles * count / cols) : 0;
+  const start = Math.max(0, Math.floor((viewport.top - TOP) / stride) - BUFFER_ROWS);
+  const end = Math.min(rowCount,
+    Math.ceil((viewport.top + viewport.height - TOP) / stride) + BUFFER_ROWS);
+  const firstIndex = start * cols;
+  const endIndex = Math.min(cycles * count, end * cols);
 
-  const handleReset = () => {
-    setSelectedCategory('all');
-    setSampleText(PRESET_TEXTS[0]);
-    setRenderMultiplier(1);
-    setLoadingState(LoadingState.IDLE);
-    setIsHeaderVisible(true);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const infiniteFonts = useMemo(() => {
-    const pageSize = 50; 
-    const items = [];
-    
-    if (filteredFonts.length === 0) return [];
-
-    // For each "page" in the multiplier, we want to provide a variation of the font pool
-    for (let m = 0; m < renderMultiplier; m++) {
-      let currentPool = [...filteredFonts];
-      
-      // If it's not the first batch, we introduce entropy
-      if (m > 0) {
-        // Rotate the pool by a multiplier-dependent offset
-        const rotation = (m * 17) % currentPool.length;
-        currentPool = [...currentPool.slice(rotation), ...currentPool.slice(0, rotation)];
-        
-        // Every other batch is reversed to break patterns further
-        if (m % 2 === 0) {
-          currentPool.reverse();
-        }
-
-        // For even higher multipliers, we do a simple deterministic shuffle
-        if (m > 2) {
-          currentPool.sort((a, b) => {
-             const hashA = (a.family.length + m) % 3;
-             const hashB = (b.family.length + m) % 3;
-             return hashA - hashB;
-          });
-        }
-      }
-
-      // Add a full pageSize of fonts from our modified currentPool
-      for (let i = 0; i < pageSize; i++) {
-        const font = currentPool[i % currentPool.length];
-        items.push({ 
-          ...font, 
-          // Unique key includes the multiplier to allow the same font to appear multiple times correctly in React
-          uniqueKey: `${font.family}-v${m}-i${i}` 
-        });
-      }
+  const visible = useMemo(() => {
+    if (!count) return [];
+    const items: { font: FontDef; index: number }[] = [];
+    for (let i = firstIndex; i < endIndex; i++) {
+      items.push({ index: i, font: cycleDeck(Math.floor(i / count))[i % count] });
     }
     return items;
-  }, [filteredFonts, renderMultiplier]);
+  }, [count, firstIndex, endIndex, cycleDeck]);
+
+  useEffect(() => {
+    function sync() {
+      frame.current = null;
+      const next = view();
+      setViewport(next);
+      if (next.top < prevScroll.current || next.top <= 0) setHeaderVisible(true);
+      else if (next.top > prevScroll.current && next.top > 100) setHeaderVisible(false);
+      prevScroll.current = next.top;
+    }
+    function schedule() {
+      if (frame.current === null) frame.current = requestAnimationFrame(sync);
+    }
+    window.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    sync();
+    return () => {
+      window.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (count && TOP + rowCount * stride - (viewport.top + viewport.height) < 1800) {
+      setCycles(n => n + 1);
+    }
+  }, [count, rowCount, stride, viewport]);
+
+  const restart = () => {
+    setCycles(1);
+    setSeed(Math.floor(Math.random() * 0xffffffff));
+    window.scrollTo(0, 0);
+    setHeaderVisible(true);
+  };
+  const changeCategory = (next: string) => { setCategory(next); restart(); };
+  const randomVibe = () => {
+    const types = ['all', 'display', 'serif', 'sans-serif', 'handwriting', 'monospace',
+      'retro', 'cyber', 'minimal', 'elegant', 'weird'];
+    setCategory(types[Math.floor(Math.random() * types.length)]);
+    restart();
+  };
+  const toggleFavorite = (name: string) => {
+    const key = name.toLowerCase();
+    setFavorites(before => before.includes(key) ? before.filter(x => x !== key) : [...before, key]);
+  };
+  const saved = useMemo(() => new Set(favorites), [favorites]);
 
   return (
     <div className="min-h-screen bg-[#050505] text-gray-200 font-sans selection:bg-doom-accent selection:text-white">
-      <Controls 
-        selectedCategory={selectedCategory}
-        onCategoryChange={handleCategoryChange}
-        onRandomVibe={handleRandomVibe}
-        onReset={handleReset}
+      <Controls
+        selectedCategory={category}
+        onCategoryChange={changeCategory}
+        onRandomVibe={randomVibe}
         sampleText={sampleText}
         setSampleText={setSampleText}
         fontSize={fontSize}
         setFontSize={setFontSize}
-        loadingState={loadingState}
-        isVisible={isHeaderVisible}
+        isVisible={headerVisible}
+        fontCount={catalog.length}
+        favoriteCount={favorites.length}
+        catalogStatus={catalogStatus}
       />
-
-      <main className="w-full px-2 pt-16">
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-          {infiniteFonts.map((font) => (
-            <FontCard 
-              key={font.uniqueKey} 
-              font={font} 
-              sampleText={sampleText}
-              setSampleText={setSampleText}
-              fontSize={fontSize}
-            />
-          ))}
-        </div>
-
-        <div 
-          ref={loaderRef}
-          className="py-32 text-center text-zinc-900 font-mono text-[8px] tracking-[2em]"
-        >
-          <div className="animate-pulse flex flex-col items-center gap-2">
-            <div className="h-[1px] w-24 bg-zinc-900"></div>
-            <div>STREAMING_NEW_VARIANTS</div>
-            <div className="h-[1px] w-24 bg-zinc-900"></div>
+      <main className="w-full px-2 pt-16" aria-label="Endless font feed">
+        {count === 0 ? (
+          <div className="pt-32 text-center text-zinc-500 font-mono">
+            No fonts here. Choose another filter or save some favorites.
           </div>
-        </div>
+        ) : (
+          <>
+            <div style={{ height: start * stride }} aria-hidden="true" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3"
+              style={{ gridAutoRows: cardHeight + 'px' }}>
+              {visible.map(({ font, index }) => (
+                <FontCard key={index} font={font} sampleText={sampleText}
+                  setSampleText={setSampleText} fontSize={fontSize}
+                  favorite={saved.has(font.family.toLowerCase())}
+                  onToggleFavorite={() => toggleFavorite(font.family)} />
+              ))}
+            </div>
+            <div style={{ height: Math.max(0, (rowCount - end) * stride) }} aria-hidden="true" />
+          </>
+        )}
       </main>
-      
-      <div className="fixed inset-0 pointer-events-none z-[-1] opacity-5 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent"></div>
     </div>
   );
 }
-
-export default App;
