@@ -14,8 +14,8 @@ const loadedStyles = new Map<string, Entry>();
 
 function cssUrl(font: FontDef): string {
   if (font.provider === 'fontsource' && font.id) {
-    return 'https://cdn.jsdelivr.net/fontsource/css/' + encodeURIComponent(font.id) +
-      '@latest/' + (font.subset || 'latin') + '.min.css';
+    return 'https://cdn.jsdelivr.net/fontsource/fonts/' + encodeURIComponent(font.id) +
+      '@latest/' + (font.subset || 'latin') + '-' + (font.weight || 400) + '-normal.woff2';
   }
   return 'https://fonts.googleapis.com/css2?family=' +
     encodeURIComponent(font.family).replace(/%20/g, '+') + '&display=swap';
@@ -26,6 +26,24 @@ function useFontStyle(font: FontDef, done: () => void): () => void {
   let entry = loadedStyles.get(href);
   if (!entry) {
     const node = document.createElement('link');
+    // Fontsource CDN serves font binaries, not stylesheets. Create @font-face.
+    if (font.provider === 'fontsource' && font.id) {
+      const face = document.createElement('style');
+      face.textContent = "@font-face{font-family:'" + font.family.replace(/'/g, "\\'") +
+        "';src:url('" + href + "') format('woff2');font-style:normal;font-weight:400;font-display:swap}";
+      const record = { node: face as unknown as HTMLLinkElement, refs: 0, ready: true, listeners: new Set<() => void>() };
+      loadedStyles.set(href, record);
+      document.head.appendChild(face);
+      record.refs++;
+      done();
+      return () => {
+        const current = loadedStyles.get(href);
+        if (current && --current.refs <= 0) {
+          current.node.remove();
+          loadedStyles.delete(href);
+        }
+      };
+    }
     node.rel = 'stylesheet';
     node.href = href;
     entry = { node, refs: 0, ready: false, listeners: new Set() };
@@ -76,7 +94,9 @@ export default function FontCard({ font, sampleText, setSampleText, fontSize, fa
   const family = "'" + font.family.replace(/'/g, "\\'") + "', " + fallback;
   const href = cssUrl(font);
   const copy = () => {
-    const css = "@import url('" + href + "');\nfont-family: " + family + ';';
+    const css = font.provider === 'fontsource'
+      ? "@font-face { font-family: '" + font.family + "'; src: url('" + href + "') format('woff2'); }\nfont-family: " + family + ";"
+      : "@import url('" + href + "');\nfont-family: " + family + ";";
     navigator.clipboard?.writeText(css).catch(() => {});
   };
 

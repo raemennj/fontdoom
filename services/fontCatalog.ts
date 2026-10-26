@@ -29,7 +29,9 @@ export function normalizeCatalog(raw: unknown): FontDef[] {
     if (!fonts.has(key)) fonts.set(key, {
       family: name, id: item.id, subset: latin, provider: 'fontsource',
       category: typeof item.category === 'string' ? item.category.toLowerCase() : 'display',
-      tags: tags.get(key) || []
+      tags: tags.get(key) || [],
+      weight: Array.isArray(item.weights) && item.weights.includes(400) ? 400 :
+        (Array.isArray(item.weights) && typeof item.weights[0] === 'number' ? item.weights[0] : 400)
     });
   });
   fallbackFonts().forEach(font => {

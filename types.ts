@@ -6,4 +6,5 @@ export interface FontDef {
   provider?: 'fontsource' | 'google';
   id?: string;
   subset?: string;
+  weight?: number;
 }
