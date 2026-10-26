@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { FontDef } from '../types';
 
 type Props = {
+  // JSX treats key as a reserved React attribute, not a runtime prop.
+  // Include it here until React's optional TypeScript type declarations are installed.
+  key?: number;
   font: FontDef;
   sampleText: string;
   setSampleText: (value: string) => void;
